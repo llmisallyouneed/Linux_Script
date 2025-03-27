@@ -58,6 +58,7 @@ fi
 # 更新文件权限
 echo -e "${INFO} 更新Agent目录权限..."
 chown -R nezha:nezha "${NZ_AGENT_PATH}"
+chmod -R 755 "${NZ_BASE_PATH}"
 chmod -R 750 "${NZ_AGENT_PATH}"
 
 # 特殊处理配置文件权限
