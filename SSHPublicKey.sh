@@ -422,7 +422,7 @@ verify_effective_sshd_settings() {
 
   [[ "$password_auth" == "no" ]] || die "PasswordAuthentication 未生效，当前值: ${password_auth:-<empty>}"
   [[ "$pubkey_auth" == "yes" ]] || die "PubkeyAuthentication 未生效，当前值: ${pubkey_auth:-<empty>}"
-  [[ "$root_login" == "prohibit-password" ]] || die "PermitRootLogin 未生效，当前值: ${root_login:-<empty>}"
+  [[ "$root_login" == "prohibit-password" || "$root_login" == "without-password" ]] || die "PermitRootLogin 未生效，当前值: ${root_login:-<empty>}"
   [[ "$auth_keys" == *".ssh/authorized_keys"* ]] || die "AuthorizedKeysFile 未生效，当前值: ${auth_keys:-<empty>}"
 }
 
@@ -438,6 +438,27 @@ validate_sshd_config() {
   fi
 }
 
+verify_sshd_listener() {
+  local expected_port="$1"
+
+  if (( DRY_RUN )); then
+    log "将检查 sshd 是否已监听端口 $expected_port"
+    return 0
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -H -ltn "( sport = :$expected_port )" 2>/dev/null | grep -q . || die "sshd 尚未监听端口 $expected_port，请检查服务状态。"
+    return 0
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$expected_port" -sTCP:LISTEN >/dev/null 2>&1 || die "sshd 尚未监听端口 $expected_port，请检查服务状态。"
+    return 0
+  fi
+
+  warn "未找到 ss 或 lsof，跳过监听端口校验。"
+}
+
 reload_sshd_service() {
   if (( SKIP_SERVICE_RESTART )); then
     warn "已跳过 ssh 服务重载，请手动执行 systemctl reload sshd 或对应命令。"
@@ -451,23 +472,25 @@ reload_sshd_service() {
 
   if command -v systemctl >/dev/null 2>&1; then
     if systemctl is-enabled sshd >/dev/null 2>&1 || systemctl status sshd >/dev/null 2>&1; then
-      systemctl reload sshd || systemctl restart sshd
+      systemctl reload sshd || systemctl restart sshd || die "自动重载/重启 sshd 失败。"
+      log "sshd 服务已重载。"
       return 0
     fi
     if systemctl is-enabled ssh >/dev/null 2>&1 || systemctl status ssh >/dev/null 2>&1; then
-      systemctl reload ssh || systemctl restart ssh
+      systemctl reload ssh || systemctl restart ssh || die "自动重载/重启 ssh 服务失败。"
+      log "ssh 服务已重载。"
       return 0
     fi
   fi
 
   if command -v service >/dev/null 2>&1; then
-    service sshd reload >/dev/null 2>&1 && return 0
-    service ssh reload >/dev/null 2>&1 && return 0
-    service sshd restart >/dev/null 2>&1 && return 0
-    service ssh restart >/dev/null 2>&1 && return 0
+    service sshd reload >/dev/null 2>&1 && { log "sshd 服务已重载。"; return 0; }
+    service ssh reload >/dev/null 2>&1 && { log "ssh 服务已重载。"; return 0; }
+    service sshd restart >/dev/null 2>&1 && { log "sshd 服务已重启。"; return 0; }
+    service ssh restart >/dev/null 2>&1 && { log "ssh 服务已重启。"; return 0; }
   fi
 
-  warn "未能自动重载 ssh 服务，请手动重载或重启。"
+  die "未能自动重载 ssh 服务，请手动执行 systemctl reload sshd 或 service sshd restart。"
 }
 
 harden_ssh() {
@@ -490,8 +513,9 @@ harden_ssh() {
   write_sshd_dropin "$port"
   warn_legacy_codex_dropin
   validate_sshd_config
-  verify_effective_sshd_settings "$port"
   reload_sshd_service
+  verify_effective_sshd_settings "$port"
+  verify_sshd_listener "$port"
 
   log "SSH 加固完成。请使用以下方式登录：ssh -p $port $user@<服务器IP>"
 }
